@@ -1,0 +1,774 @@
+---
+title: "FinalReport"
+author: "Adrian Leon"
+date: "19/12/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+# load libraries
+library(sf)
+library(kableExtra)
+library(tigris)
+library(mapview)
+library(tidyverse)
+library(tidycensus)
+
+# set options
+options(scipen = 999)
+options(tigris_class = "sf")
+
+
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
+# function shorcuts
+g <- glimpse
+m <- mapview
+len <- length
+st_c <- st_coordinates
+
+```
+
+## R Markdown
+
+
+```{r}
+  
+# variables in dataframes
+cols <-  c('S000','SA01','SA02','SA03','SE01','SE02','SE03','SI01','SI02', 'SI03')
+cols_1 <-  c('S000_1','SA01_1','SA02_1','SA03_1','SE01_1','SE02_1','SE03_1','SI01_1','SI02_1','SI03_1')
+cols_1_1 <-  c('S000_1_1','SA01_1_1','SA02_1_1','SA03_1_1','SE01_1_1','SE02_1_1','SE03_1_1','SI01_1_1','SI02_1_1','SI03_1_1')
+
+jobs <- read.csv("./data/pa_od_main_JT00_2019.csv") %>%
+  filter(grepl("42101",w_geocode)) %>%
+  dplyr::select(-h_geocode, -createdate) %>%
+  mutate(across(w_geocode, as.character)) %>%
+  group_by(w_geocode) %>%
+  summarize(across(cols, list(sum))) %>%
+  rename('GEOID10' = w_geocode)
+
+# get geometry for blocks in Philadelphia
+phlblocks <- tigris::blocks(state = 42, county = 101) %>%
+  dplyr::select(GEOID10, geometry)
+
+# get geometry for block groups in Philadelphia
+phlgroups <- tigris::block_groups(state = 42, county = 101) %>%
+  dplyr::select(GEOID, geometry)
+
+# get geometry for tracts in Philadelphia
+phltracts <- tigris::tracts(state = 42, county = 101) %>%
+  dplyr::select(GEOID, geometry)
+
+# get geometry for the county of Philadelphia
+phlcounty <- tigris::counties(state = 42) %>%
+  filter(GEOID == '42101') %>%
+  dplyr::select(GEOID, geometry)
+
+
+
+# All of the block groups in our Jobs data are in the geo info
+table(unique(jobs$GEOID10) %in% unique(phlblocks$GEOID10))
+
+phlData <- phlblocks %>%
+  left_join(jobs, by='GEOID10') %>%
+  replace(is.na(.), 0) %>%
+  st_sf()
+
+# aggregate by block groups
+phlData_groups <- phlData %>%
+  st_drop_geometry() %>%
+  mutate('GEOID' = substr(GEOID10,1,12)) %>%
+  group_by(GEOID) %>%
+  summarize(across(cols_1, list(sum))) %>%
+  mutate(j29orless = ifelse(S000_1_1 > 0, SA01_1_1/S000_1_1, 0),
+         j30to54y = ifelse(S000_1_1 > 0, SA02_1_1/S000_1_1, 0),
+         j55older = ifelse(S000_1_1 > 0, SA03_1_1/S000_1_1, 0),
+         jSal1250 = ifelse(S000_1_1 > 0, SE01_1_1/S000_1_1, 0),
+         jSal3333 = ifelse(S000_1_1 > 0, SE02_1_1/S000_1_1, 0),
+         jSalmore = ifelse(S000_1_1 > 0, SE03_1_1/S000_1_1, 0),
+         jTotal = S000_1_1) %>%
+  dplyr::select(-cols_1_1) %>%
+  left_join(phlgroups, by='GEOID') %>%
+  st_sf()
+
+
+# aggregate by census tracts
+phlData_tracts <- phlData %>%
+  st_drop_geometry() %>%
+  mutate('GEOID' = substr(GEOID10,1,11)) %>%
+  group_by(GEOID) %>%
+  summarize(across(cols_1, list(sum))) %>%
+  mutate(j29orless = ifelse(S000_1_1 > 0, SA01_1_1/S000_1_1, 0),
+         j30to54y = ifelse(S000_1_1 > 0, SA02_1_1/S000_1_1, 0),
+         j55older = ifelse(S000_1_1 > 0, SA03_1_1/S000_1_1, 0),
+         jSal1250 = ifelse(S000_1_1 > 0, SE01_1_1/S000_1_1, 0),
+         jSal3333 = ifelse(S000_1_1 > 0, SE02_1_1/S000_1_1, 0),
+         jSalmore = ifelse(S000_1_1 > 0, SE03_1_1/S000_1_1, 0),
+         jTotal = S000_1_1) %>%
+  dplyr::select(-cols_1_1) %>%
+  left_join(phltracts, by='GEOID') %>%
+  st_sf()
+
+
+c('w_geocode','Char15 Workplace Census Block Code',
+  'h_geocode',' Char15 Residence Census Block Code',
+  'S000','Num Total number of jobs',
+  'SA01','Num Number of jobs of workers age 29 or younger',
+  'SA02','Num Number of jobs for workers age 30 to 54',
+  'SA03','Num Number of jobs for workers age 55 or older',
+  'SE01','Num Number of jobs with earnings $1250/month or less',
+  'SE02','Num Number of jobs with earnings $1251/month to $3333/month',
+  'SE03','Num Number of jobs with earnings greater than $3333/month',
+  'SI01','Num Number of jobs in Goods Producing industry sectors',
+  'SI02','Num Number of jobs in Trade, Transportation, and Utilities industry sectors',
+  'SI03','Num Number of jobs in All Other Services industry sectors')
+
+# If there is TIME, compare to a choropleth of where people live
+
+
+```
+
+
+
+## Census Data
+
+```{r load census data}
+
+
+census_api_key("c2bdb8d298b60ec0cb50b561a2f8df61e92f6b39")
+
+acsVariableList2019 <- load_variables(2019, "acs5", cache = TRUE)
+
+
+vars <- c("B02001_001E", # Total population 
+             "B11001_002E", # Total households
+             "B02001_002E", # Total white population 
+             "B08015_001E", # Aggregate number of vehicles used in commuting
+             "B08103_001E", # Median age by mode of transportation
+             "B08103_004E", # Median age by mode of transportation: Public Transportation
+             "B08103_005E", # Median age by mode of transportation: Walking
+             "B19013_001E") # Median household income
+
+# Get the data
+tracts19 <-
+  get_acs(geography = "tract",
+          variables = vars,
+          year=2019,
+          state = 42,
+          county = 101,
+          geometry=T,
+          output="wide") %>%
+  st_transform(st_crs('EPSG:4269')) %>%
+  rename(totalPop = "B02001_001E",
+         totalHHs = "B11001_002E",
+         whitePop = "B02001_002E",
+         aggVehicles = "B08015_001E",
+         medAgeTotal = "B08103_001E",
+         medAgeTransit = "B08103_004E",
+         medAgeWalking = "B08103_005E",
+         medHHInc = "B19013_001E") %>%
+  dplyr::select(-NAME, -starts_with("B")) %>%
+  replace(is.na(.), 0) %>%
+  mutate(pctWhite = ifelse(totalPop > 0, whitePop / totalPop, 0),
+         commVehHH = ifelse(totalHHs > 0, aggVehicles / totalHHs, 0),
+         diffAgeTransit = ifelse(medAgeTransit == 0, 0, medAgeTotal - medAgeTransit),
+         diffAgeWalking = ifelse(medAgeWalking == 0, 0, medAgeTotal - medAgeWalking)) %>%
+  dplyr::select(-whitePop, -aggVehicles, -medAgeWalking, -medAgeTransit)
+
+
+```
+
+
+```{r load transit data}
+
+# get subway stops
+subwayStops <- read.csv('./data/SEPTA_-_Highspeed_Stations.csv') %>%
+  st_as_sf(coords = c("Longitude","Latitude"), crs = 4269) %>%
+  st_transform(st_crs(tracts19)) %>%
+  st_filter(., phlcounty) %>%
+  mutate(substops = 1) %>% 
+  dplyr::select(substops, geometry)
+  
+# get trolley stops
+trolleyStops <- read.csv('./data/SEPTA_-_Trolley_Stops.csv') %>%
+  st_as_sf(coords = c("Longitude","Latitude"), crs = 4269) %>%
+  st_transform(st_crs(tracts19)) %>%
+  st_filter(., phlcounty) %>%
+  mutate(trostops = 1) %>% 
+  dplyr::select(trostops, geometry)
+
+# get bus stops
+busStops <- read.csv('./data/Fall_2021_Stops_by_Route.csv') %>%
+  st_as_sf(coords = c("Lon","Lat"), crs = 4269) %>%
+  st_transform(st_crs(tracts19)) %>%
+  st_filter(., phlcounty) %>%
+  mutate(busstops = 1) %>% 
+  dplyr::select(busstops, geometry)
+
+
+```
+
+
+
+
+```{r merge all datasets}
+
+# non-spatial and spatial merge
+s_stops <- phltracts %>% 
+  aggregate(subwayStops, ., sum) %>%
+  cbind(., st_drop_geometry(phltracts)) %>%
+  st_drop_geometry()
+
+t_stops <- phltracts %>% 
+  aggregate(trolleyStops, ., sum) %>%
+  cbind(., st_drop_geometry(phltracts)) %>%
+  st_drop_geometry()
+
+b_stops <- phltracts %>% 
+  aggregate(busStops, ., sum) %>%
+  cbind(., st_drop_geometry(phltracts)) %>%
+  st_drop_geometry()
+
+accessData <- phlData_tracts %>%
+  st_drop_geometry() %>%
+  merge(tracts19, by='GEOID') %>%
+  left_join(s_stops, by='GEOID') %>%
+  left_join(t_stops, by='GEOID') %>%
+  left_join(b_stops, by='GEOID') %>%
+  replace(is.na(.), 0) %>%
+  st_sf()
+
+
+```
+
+
+
+
+
+```{r fig.height=6, fig.width=6}
+
+qBr <- function(df, variable, rnd) {
+  if (missing(rnd)) {
+    as.character(quantile(round(df[[variable]],2),
+                          c(.01,.2,.4,.6,.8), na.rm=T))
+    } else if (rnd == FALSE | rnd == F) {
+      as.character(formatC(quantile(df[[variable]],
+                                    c(.01,.2,.4,.6,.8), na.rm=T), digits = 3))
+    }
+}
+
+palette5 <- c("#f0f9e8","#bae4bc","#7bccc4","#139ed1","#0868ac")
+
+accessData %>%
+  ggplot() +
+  geom_sf(aes(fill = q5(medHHInc)), color = NA) +
+  scale_fill_manual(values = palette5,
+                        labels = qBr(accessData, "medHHInc"),
+                    name = "Median Income\n(USD)") +
+  geom_sf(data = phltracts %>%
+          filter(GEOID %in% c('42101001202','42101023700')) %>%
+          st_union(),
+          color = "#ff5500",
+          fill = "transparent") + 
+  labs(title = "Median Household Income", subtitle = "Philadelphia County 2019") +
+  mapTheme() +
+  theme(legend.position = "bottom",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#333333"),
+        panel.grid = element_blank(),
+        strip.background = element_rect(fill = "#333333"),
+        strip.text.x = element_text(size = 8, color = '#ffffff', hjust=0.01)
+        )
+
+```
+
+
+
+```{r  fig.height=6, fig.width=6}
+
+accessData %>%
+  ggplot() +
+  geom_sf(aes(fill = pctWhite), color = NA) +
+  scale_fill_gradient(low=palette5[1],
+                       high=palette5[5],
+                      guide='colorbar') +
+  geom_sf(data = phltracts %>%
+          filter(GEOID %in% c('42101001202','42101023700')) %>%
+          st_union(),
+          color = "#ff5500",
+          fill = "transparent") + 
+  labs(title = "White population percentage", subtitle = "Philadelphia County 2019") +
+  guides(size=F,
+         fill=guide_colorbar(title="% White Population", barwidth = 10)) +
+  mapTheme() +
+  theme(legend.position = "bottom",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#333333"),
+        panel.grid = element_blank(),
+        strip.background = element_rect(fill = "#333333"),
+        strip.text.x = element_text(size = 8, color = '#ffffff', hjust=0.01)
+        )
+
+```
+
+
+```{r  fig.height=6, fig.width=6}
+
+
+phlData_groups %>%
+  ggplot() +
+  geom_sf(aes(fill = q5(jTotal)), color = NA) +
+  scale_fill_manual(values = palette5,
+                        labels = qBr(accessData, "jTotal"),
+                    name = "number of jobs") +
+  geom_sf(data = phltracts %>%
+          filter(GEOID %in% c('42101001202','42101023700')) %>%
+          st_union(),
+          color = "#ff5500",
+          fill = "transparent") + 
+  labs(title = "Distribution of jobs per block group", subtitle = "Philadelphia County 2019") +
+  mapTheme() +
+  theme(legend.position = "bottom",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#333333"),
+        panel.grid = element_blank(),
+        strip.background = element_rect(fill = "#333333"),
+        strip.text.x = element_text(size = 8, color = '#ffffff', hjust=0.01)
+        )
+
+
+```
+```{r  fig.height=6, fig.width=6}
+
+accessData %>%
+  ggplot() +
+  geom_sf(aes(fill = commVehHH), color = NA) +
+  scale_fill_gradient(low=palette5[2],
+                       high=palette5[5],
+                      guide='colorbar') +
+  scale_size_continuous(range = c(0,3)) +
+  geom_sf(data = phltracts %>%
+          filter(GEOID %in% c('42101001202','42101023700')) %>%
+          st_union(),
+          color = "#ff5500",
+          fill = "transparent") + 
+  labs(title = "Mean Number of Vehicles per Household", subtitle = "Philadelphia County 2019") +
+  guides(size=F,
+         fill=guide_colorbar(title="n of vehicles", barwidth = 10)) +
+  mapTheme() +
+  theme(legend.position = "bottom",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#333333"),
+        panel.grid = element_blank(),
+        strip.background = element_rect(fill = "#333333"),
+        strip.text.x = element_text(size = 8, color = '#ffffff', hjust=0.01)
+        )
+
+
+```
+
+
+
+```{r fig.height=6, fig.width=6}
+
+
+phltracts %>%
+  ggplot() +
+  geom_sf(colour = "#222222", fill = "#3a3a3a") +
+  geom_sf(data=busStops, aes(color ="bus"), size=.75) +
+  geom_sf(data=trolleyStops, aes(color ="trolley"), size=1) +
+  geom_sf(data=subwayStops, aes(color ="subway"), size=2) + 
+  scale_color_manual(values = c('#888888','#0d8eff','#00e08a'), aesthetics = "color") + 
+  geom_sf(data = phltracts %>%
+          filter(GEOID %in% c('42101001202','42101023700')) %>%
+          st_union(),
+          color = "#ff5500",
+          fill = "transparent") + 
+  labs(title="SEPTA transit system by mode") +
+  mapTheme() +
+  theme(legend.position = "bottom",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#222222"),
+        panel.grid = element_blank(),
+        strip.background = element_rect(fill = "#222222"),
+        strip.text.x = element_text(size = 16, color = '#ffffff', hjust=0.01)
+        )
+
+
+
+```
+
+
+
+
+
+
+```{r  fig.height=6, fig.width=6}
+
+accessData %>%
+  ggplot() +
+  geom_sf(aes(fill = diffAgeTransit), color = NA) +
+  scale_fill_gradient2(low='red',
+                       mid = '#ffffff',
+                       high='blue',
+                      guide='colorbar') +
+  geom_sf(data = phltracts %>%
+          filter(GEOID %in% c('42101001202','42101023700')) %>%
+          st_union(),
+          color = "#ff5500",
+          fill = "transparent") + 
+  labs(title = "Difference between median age and age of transit users", subtitle = "Philadelphia County 2019") +
+  guides(size=F,
+         fill=guide_colorbar(title="age difference", barwidth = 10)) +
+  mapTheme() +
+  theme(legend.position = "bottom",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#333333"),
+        panel.grid = element_blank(),
+        strip.background = element_rect(fill = "#333333"),
+        strip.text.x = element_text(size = 8, color = '#ffffff', hjust=0.01)
+        )
+
+```
+
+
+
+```{r  fig.height=6, fig.width=6}
+
+accessData %>%
+  ggplot() +
+  geom_sf(aes(fill = diffAgeWalking), color = NA) +
+  scale_fill_gradient2(low='red',
+                       mid = '#ffffff',
+                       high='blue',
+                      guide='colorbar') +
+  geom_sf(data = phltracts %>%
+          filter(GEOID %in% c('42101001202','42101023700')) %>%
+          st_union(),
+          color = "#ff5500",
+          fill = "transparent") + 
+  labs(title = "Difference between median age and age of walkers", subtitle = "Philadelphia County 2019") +
+  guides(size=F,
+         fill=guide_colorbar(title="age difference", barwidth = 10)) +
+  mapTheme() +
+  theme(legend.position = "bottom",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#333333"),
+        panel.grid = element_blank(),
+        strip.background = element_rect(fill = "#333333"),
+        strip.text.x = element_text(size = 8, color = '#ffffff', hjust=0.01)
+        )
+
+```
+
+
+
+```{r}
+
+selTractsData <- accessData %>%
+  filter(GEOID %in% c('42101001202','42101023700')) %>%
+  st_drop_geometry()
+
+
+unused <- c('totalPop', 'totalHHs', 'medAgeTotal', 'medHHInc','diffAgeTransit', 'diffAgeWalking', 'substops', 'trostops', 'busstops', 'jTotal')
+
+selTractsData %>%
+ # dplyr::select(-j29orless_1, -j30to54y_1, j55older_1) %>%
+  cbind(data.frame(tract = c('Center City','Mt. Airy'))) %>%
+  dplyr::select(-GEOID, -unused) %>%
+  gather(Variable, values, -tract) %>%
+  ggplot(aes(Variable, values)) + 
+  geom_bar(aes(fill = values), position = "dodge", stat="identity") +
+  facet_wrap(~tract) +
+  labs(title = "Variables by Census Tract",
+       subtitle = 'mean') +
+  theme(legend.position = "right",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#e1e1e1"),
+        panel.grid.major.x =  element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0.5),
+        strip.text.x = element_text(size = 12)
+        )
+
+
+```
+
+
+
+
+```{r}
+
+
+used <- c('substops', 'trostops', 'busstops')
+
+
+selTractsData %>%
+ # dplyr::select(-j29orless_1, -j30to54y_1, j55older_1) %>%
+  cbind(data.frame(tract = c('Center City','Mt. Airy'))) %>%
+  dplyr::select(tract, used) %>%
+  gather(Variable, values, -tract) %>%
+  ggplot(aes(Variable, values)) + 
+  geom_bar(aes(fill = values), position = "dodge", stat="identity") +
+  facet_wrap(~tract) +
+  labs(title = "Variables by Census Tract",
+       subtitle = 'mean') +
+  theme(legend.position = "right",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#e1e1e1"),
+        panel.grid.major.x =  element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0.5),
+        strip.text.x = element_text(size = 12)
+        )
+
+
+
+
+```
+
+
+
+
+
+```{r Pedestrian Index}
+
+
+# Create centroid in each block with the number of jobs in that block
+jobPoints <- phlData %>%
+  st_drop_geometry() %>%
+  left_join(st_centroid(phlblocks), by="GEOID10") %>%
+  dplyr::select(cols_1, geometry) %>%
+  st_sf()
+
+
+radius <- 805
+
+# set walkable zone around tract
+centroid_A <- phltracts %>%
+  filter(GEOID == '42101001202') %>%
+  st_centroid() 
+
+radius_A <- phltracts %>%
+  filter(GEOID == '42101001202') %>%
+  st_cast(to = 'MULTILINESTRING') %>%
+  st_distance(y = centroid_A)
+
+walkBuffer_A <- centroid_A %>%
+  st_buffer(radius + (as.numeric(radius_A)))
+
+
+centroid_B <- phltracts %>%
+  filter(GEOID == '42101023700') %>%
+  st_centroid() 
+
+radius_B <- phltracts %>%
+  filter(GEOID == '42101023700') %>%
+  st_cast(to = 'MULTILINESTRING') %>%
+  st_distance(y = centroid_B)
+
+walkBuffer_B <- centroid_B %>%
+  st_buffer(radius + (as.numeric(radius_B)))
+
+
+jcols <- c('j29orless','j30to54y','j55older','jSal1250','jSal3333','jSalmore','jTotal')
+
+
+# trim jobs in walkable zone in the center
+jobsCenter <- st_filter(jobPoints, walkBuffer_A) %>%
+  mutate(j29orless = ifelse(S000_1 > 0, SA01_1/S000_1, 0),
+         j30to54y = ifelse(S000_1 > 0, SA02_1/S000_1, 0),
+         j55older = ifelse(S000_1 > 0, SA03_1/S000_1, 0),
+         jSal1250 = ifelse(S000_1 > 0, SE01_1/S000_1, 0),
+         jSal3333 = ifelse(S000_1 > 0, SE02_1/S000_1, 0),
+         jSalmore = ifelse(S000_1 > 0, SE03_1/S000_1, 0),
+         jTotal = S000_1) %>%
+  dplyr::select(-cols_1)
+
+jobsCenterMean <- jobsCenter %>%
+  summarize(across(jcols, list(mean))) %>%
+  mutate(GEOID = '42101001202', .before=j29orless_1) %>%
+  mutate(jTotal_1 = sum(jobsCenter$jTotal)) %>%
+  st_drop_geometry()
+
+
+# trim jobs in walkable zone in Mt. Airy
+jobsMtAiry <- st_filter(jobPoints, walkBuffer_B) %>%
+  mutate(j29orless = ifelse(S000_1 > 0, SA01_1/S000_1, 0),
+         j30to54y = ifelse(S000_1 > 0, SA02_1/S000_1, 0),
+         j55older = ifelse(S000_1 > 0, SA03_1/S000_1, 0),
+         jSal1250 = ifelse(S000_1 > 0, SE01_1/S000_1, 0),
+         jSal3333 = ifelse(S000_1 > 0, SE02_1/S000_1, 0),
+         jSalmore = ifelse(S000_1 > 0, SE03_1/S000_1, 0),
+         jTotal = S000_1) %>%
+  dplyr::select(-cols_1)
+
+jobsPedestrian <- rbind(jobsCenterMean, jobsMtAiryMean)
+
+
+cbind(data.frame(tract = c('Center City','Mt. Airy')), jobsPedestrian) %>%
+  dplyr::select(-GEOID) %>%
+  kable(caption= "Pedestrian Access Summary Table", digits=2) %>%
+  kable_styling()
+
+
+```
+
+
+```{r fig.height=5, fig.width=8}
+
+jobsPedestrian  %>%
+  dplyr::select(-starts_with('jSal')) %>%
+  cbind(data.frame(tract = c('Center City','Mt. Airy'))) %>%
+  dplyr::select(-GEOID, -jTotal_1) %>%
+  gather(Variable, jobshare, -tract) %>%
+  ggplot(aes(Variable, jobshare)) + 
+  geom_bar(aes(fill = jobshare), position = "dodge", stat="identity") +
+  facet_wrap(~tract) +
+  labs(title = "Job types by Census Tract",
+       subtitle = 'by age group') +
+  theme(legend.position = "right",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#222222"),
+        panel.grid.major.x =  element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0.5),
+        strip.text.x = element_text(size = 12)
+        )
+
+```
+
+
+```{r fig.height=5, fig.width=10}
+
+jobsPedestrian  %>%
+  dplyr::select(-j29orless_1, -j30to54y_1, j55older_1) %>%
+  cbind(data.frame(tract = c('Center City','Mt. Airy'))) %>%
+  dplyr::select(-GEOID, -jTotal_1) %>%
+  gather(Variable, jobshare, -tract) %>%
+  ggplot(aes(Variable, jobshare)) + 
+  geom_bar(aes(fill = jobshare), position = "dodge", stat="identity") +
+  facet_wrap(~tract) +
+  labs(title = "Job types by Census Tract",
+       subtitle = 'by monthly salary') +
+  theme(legend.position = "right",
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "#222222"),
+        panel.grid.major.x =  element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0.5),
+        strip.text.x = element_text(size = 12)
+        )
+
+```
+
+
+
+```{r}
+
+m(jobsCenter, zcol='jTotal')
+
+m(jobsMtAiry, zcol='jTotal')
+
+```
+
+
+
+
+
+```{r Transit Index}
+
+# Calculate Transit Index
+
+capacity <- data_frame(
+  mode = c('bus','subway','trolley'),
+  unitsHour = c(7.5,10,8),
+  capacity = c(54,1070,54))
+
+
+# For center City Tract
+transit_sA<- st_filter(subwayStops, walkBuffer_A) %>%
+  mutate(mode = 'subway') %>%
+  rename('stops' = substops)
+
+transit_tA<- st_filter(trolleyStops, walkBuffer_A) %>%
+  mutate(mode = 'trolley') %>%
+  rename('stops' = trostops)
+
+transit_bA<- st_filter(busStops, walkBuffer_A) %>%
+  mutate(mode = 'bus') %>%
+  rename('stops' = busstops)
+
+transit_A <- rbind(transit_sA, transit_tA, transit_bA)
+
+transit_A_summ <- transit_A %>%
+  group_by(mode) %>%
+  summarize(count = sum(stops)) %>%
+  st_drop_geometry()%>%
+  merge(capacity, by='mode') %>%
+  mutate(total = count*unitsHour * capacity)
+
+
+# For Mt. Airy tract
+transit_sB<- st_filter(subwayStops, walkBuffer_B) %>%
+  mutate(mode = 'subway') %>%
+  rename('stops' = substops)
+
+transit_tB<- st_filter(trolleyStops, walkBuffer_B) %>%
+  mutate(mode = 'trolley') %>%
+  rename('stops' = trostops)
+
+transit_bB<- st_filter(busStops, walkBuffer_B) %>%
+  mutate(mode = 'bus') %>%
+  rename('stops' = busstops)
+
+transit_B <- rbind(transit_sB, transit_tB, transit_bB)
+
+transit_B_summ <- transit_B %>%
+  group_by(mode) %>%
+  summarize(count = sum(stops)) %>%
+  st_drop_geometry() %>%
+  merge(capacity, by='mode') %>%
+  mutate(total = count *unitsHour * capacity)
+
+
+transitSumm <- rbind(
+  transit_A_summ %>%
+  mutate(tract = 'Center') %>%
+  group_by(tract) %>%
+  summarize(sum(total)),
+  transit_B_summ %>%
+  mutate(tract = 'Mt.Airy') %>%
+  group_by(tract) %>%
+  summarize(sum(total)))
+
+
+
+
+
+transit_A_summ %>%
+  kable(caption= "Center City Tract Transit Accessibility Measure") %>%
+  kable_styling()
+
+
+
+transit_B_summ %>%
+  kable(caption= "Mt. Airy Tract Transit Accessibility Measure") %>%
+  kable_styling()
+
+
+transitSumm %>%
+  kable(caption= "Center City Tract Transit Accessibility Measure") %>%
+  kable_styling()
+  
+
+
+
+
+```
+
+
+```{r}
+
+```
+
+
